@@ -1,9 +1,8 @@
 class MetasploitModule < Msf::Auxiliary
-
   def initialize(info = {})
     super(update_info(info,
-      'Name'        => 'Build Vulnerable Lab',
-      'Description' => 'Run vulnerable apps using Docker (DVWA, Juice, WebGoat)',
+      'Name'        => 'Build Vulnerable Labs',
+      'Description' => 'Run multiple vulnerable apps using Docker (DVWA, Juice, WebGoat, etc.)',
       'Author'      => ['Ahmed'],
       'License'     => MSF_LICENSE
     ))
@@ -11,11 +10,15 @@ class MetasploitModule < Msf::Auxiliary
     register_options(
       [
         OptEnum.new('ACTION', [true, 'Action to perform: start, stop, list', 'start', ['start','stop','list']]),
-        OptString.new('TARGET', [false, 'Target to run (dvwa | juice | webgoat)', 'dvwa'])
+        OptString.new('TARGET', [false, 'Target(s) to run (comma-separated if multiple)', 'dvwa']),
+        OptInt.new('PORT', [false, 'Custom port (optional)'])
       ]
     )
   end
 
+  # ====================
+  # Main run
+  # ====================
   def run
     action = datastore['ACTION']
     target = datastore['TARGET']
@@ -35,33 +38,39 @@ class MetasploitModule < Msf::Auxiliary
   # ====================
   # Helper methods
   # ====================
-
   def start_target(target)
     targets = {
       'dvwa' => {image: 'vulnerables/web-dvwa', internal_port: 80, default_port: 8080},
       'juice' => {image: 'bkimminich/juice-shop', internal_port: 3000, default_port: 3000},
-      'webgoat' => {image: 'webgoat/webgoat', internal_port: 8080, default_port: 8081}
+      'webgoat' => {image: 'webgoat/webgoat', internal_port: 8080, default_port: 8081},
+      'bwapp' => {image: 'raesene/bwapp', internal_port: 80, default_port: 8082},
+      'mutillidae' => {image: 'citizenstig/nowasp', internal_port: 80, default_port: 8083}
     }
 
-    unless targets.key?(target)
-      print_error("Unknown target! Use: dvwa | juice | webgoat")
-      return
-    end
+    targets_list = target.split(',').map(&:strip)
+    targets_list.each do |t|
+      if targets.key?(t)
+        info = targets[t]
+      else
+        # Dynamic target
+        info = {image: t, internal_port: 80, default_port: find_free_port(8080)}
+        print_status("Dynamic target detected: #{t}, using Docker image name same as target")
+      end
 
-    info = targets[target]
-    port = find_free_port(info[:default_port])
-    cmd = "docker run -d -p #{port}:#{info[:internal_port]} #{info[:image]}"
-    result = system(cmd)
+      port = datastore['PORT'] || info[:default_port]
+      cmd = "docker run -d -p #{port}:#{info[:internal_port]} #{info[:image]}"
+      result = system(cmd)
 
-    if result
-      print_good("#{target} started at http://localhost:#{port}")
-    else
-      print_error("Failed to start #{target} (port may be in use)")
+      if result
+        print_good("#{t} started at http://localhost:#{port}")
+      else
+        print_error("Failed to start #{t} (maybe image doesn't exist or port is in use)")
+      end
     end
   end
 
   def list_containers
-    system("docker ps")
+    system("docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.Ports}}'")
   end
 
   def stop_all_containers
@@ -72,11 +81,8 @@ class MetasploitModule < Msf::Auxiliary
   def find_free_port(start_port)
     port = start_port
     loop do
-      if port_free?(port)
-        return port
-      else
-        port += 1
-      end
+      return port if port_free?(port)
+      port += 1
     end
   end
 
